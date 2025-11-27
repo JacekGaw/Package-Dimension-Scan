@@ -39,9 +39,9 @@ pip install -r requirements.txt
 
 ### Configuration
 
-Copy `.env` file and adjust settings as needed. Key settings:
+Copy `.env.example` to `.env` and adjust settings as needed. Key settings:
 - `PORT`: Server port (default: 5000)
-- `CORS_ORIGINS`: Allowed CORS origins
+- `CORS_ORIGINS`: Allowed CORS origins (default: http://localhost:3000,http://localhost:23001)
 - `MAX_CONTENT_LENGTH`: Max upload size in bytes
 
 ### Running

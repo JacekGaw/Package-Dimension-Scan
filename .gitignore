@@ -8,6 +8,8 @@ venv/
 env/
 ENV/
 
+.env
+
 # IDE
 .vscode/
 .idea/
@@ -26,3 +28,8 @@ ENV/
 # OS
 .DS_Store
 Thumbs.db
+
+# Debug files (can be deleted manually)
+logs/*.log
+temp_debug_images/*.jpg
+temp_debug_images/*.png

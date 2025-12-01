@@ -33,3 +33,4 @@ Thumbs.db
 logs/*.log
 temp_debug_images/*.jpg
 temp_debug_images/*.png
+temp_debug_images/*/

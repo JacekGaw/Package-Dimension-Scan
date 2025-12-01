@@ -6,7 +6,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 
 # Import QUADRILATERAL detection method (user's proposition)
-from src.calibration_proposition import (
+from src.final_calibration import (
     detect_credit_card,
     calculate_calibration,
     save_debug_image

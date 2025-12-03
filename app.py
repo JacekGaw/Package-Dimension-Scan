@@ -6,8 +6,9 @@ import time
 from datetime import datetime
 from dotenv import load_dotenv
 
-# Import QUADRILATERAL detection method (user's proposition)
-from src.final_calibration import (
+# Import REFACTORED detection modules (uses strategy runner with configurable methods)
+# Original files (final_calibration.py, measurement.py) are preserved for reference
+from src.calibration import (
     detect_credit_card,
     calculate_calibration,
     save_debug_image

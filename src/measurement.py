@@ -1,12 +1,13 @@
 """
-Package Detection and Measurement Module
-Detects packages and calculates dimensions using cross-validation
-Includes extensive debug logging and image generation
+Package Detection and Measurement Module (REFACTORED)
 
-Detection methods (tries in order):
-1. YOLO - Fast object detection (50-200ms, works for 80 COCO classes)
-2. rembg - AI-powered background removal (90-95% accuracy, works on ANY object)
-3. Edge detection - Canny edges with contour finding (fallback)
+This is the refactored version that uses the strategy runner with configurable detectors.
+The original file (measurement.py) has been preserved for reference.
+
+Detection methods (configured in config/detection_config.py):
+- YOLO - Fast object detection (50-200ms, works for 80 COCO classes)
+- rembg - AI-powered background removal (90-95% accuracy, works on ANY object)
+- Edge detection - Canny edges with contour finding (fallback)
 """
 
 import cv2
@@ -14,396 +15,15 @@ import numpy as np
 import os
 import logging
 from datetime import datetime
-from PIL import Image
-import io
+
+from src.strategies.strategy_runner import DetectionStrategyRunner
+from config.detection_config import DetectionConfig
 
 logger = logging.getLogger(__name__)
-
-# Try to import YOLO (optional dependency)
-try:
-    from ultralytics import YOLO
-    YOLO_AVAILABLE = True
-    YOLO_MODEL = None  # Will be loaded on first use
-    logger.info("YOLO library loaded successfully - Fast object detection enabled")
-except ImportError:
-    YOLO_AVAILABLE = False
-    YOLO_MODEL = None
-    logger.warning("YOLO not available - Install with: pip install ultralytics")
-
-# Try to import rembg (optional dependency)
-try:
-    from rembg import remove
-    REMBG_AVAILABLE = True
-    logger.info("rembg library loaded successfully - AI background removal enabled")
-except ImportError:
-    REMBG_AVAILABLE = False
-    logger.warning("rembg not available - will use edge detection only. Install with: pip install rembg")
 
 # Debug image directory
 DEBUG_IMAGE_DIR = os.path.join(os.path.dirname(__file__), '..', 'temp_debug_images')
 os.makedirs(DEBUG_IMAGE_DIR, exist_ok=True)
-
-
-def detect_with_yolo(image, debug_folder):
-    """
-    Detect package using YOLO object detection with segmentation
-
-    This is the FASTEST method (50-200ms on CPU) but only works for
-    objects in the COCO dataset (80 classes: boxes, bottles, books, etc.)
-
-    Args:
-        image: BGR input image (numpy array)
-        debug_folder: Path to save debug images
-
-    Returns:
-        dict with pixel dimensions, debug info, and object class
-
-    Raises:
-        ValueError: If no objects detected or YOLO not available
-    """
-    global YOLO_MODEL
-
-    if not YOLO_AVAILABLE:
-        raise ValueError("YOLO not available")
-
-    logger.info("  Method: YOLO object detection")
-
-    try:
-        # Load model on first use (lazy loading)
-        if YOLO_MODEL is None:
-            logger.info("  Loading YOLO model (first time only)...")
-            YOLO_MODEL = YOLO('yolov8n-seg.pt')  # Nano model - fastest
-            logger.info("  YOLO model loaded")
-
-        # Run inference
-        logger.info("  Running YOLO inference...")
-        results = YOLO_MODEL(image, verbose=False)
-
-        if len(results) == 0 or results[0].masks is None:
-            logger.warning("  YOLO: No objects detected")
-            raise ValueError("No objects detected")
-
-        # Get masks and boxes
-        masks = results[0].masks.data.cpu().numpy()
-        boxes = results[0].boxes.xyxy.cpu().numpy()
-        classes = results[0].boxes.cls.cpu().numpy()
-        confidences = results[0].boxes.conf.cpu().numpy()
-
-        if len(masks) == 0:
-            logger.warning("  YOLO: No masks generated")
-            raise ValueError("No masks generated")
-
-        # Get the largest detected object
-        areas = [cv2.countNonZero(mask.astype(np.uint8)) for mask in masks]
-        largest_idx = np.argmax(areas)
-
-        mask = masks[largest_idx]
-        detected_class = int(classes[largest_idx])
-        confidence = float(confidences[largest_idx])
-
-        # Get class name
-        class_names = results[0].names
-        class_name = class_names[detected_class]
-
-        logger.info(f"  YOLO detected: {class_name} (class {detected_class}) with confidence {confidence:.2f}")
-
-        # Convert mask to uint8 and resize to image size
-        mask_uint8 = (mask * 255).astype(np.uint8)
-        if mask_uint8.shape != image.shape[:2]:
-            mask_uint8 = cv2.resize(mask_uint8, (image.shape[1], image.shape[0]))
-
-        cv2.imwrite(os.path.join(debug_folder, "2_yolo_mask.jpg"), mask_uint8)
-
-        # Clean up mask with morphological operations
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        mask_cleaned = cv2.morphologyEx(mask_uint8, cv2.MORPH_CLOSE, kernel)
-        mask_cleaned = cv2.morphologyEx(mask_cleaned, cv2.MORPH_OPEN, kernel)
-        cv2.imwrite(os.path.join(debug_folder, "3_yolo_mask_cleaned.jpg"), mask_cleaned)
-
-        # Find contours
-        contours, _ = cv2.findContours(mask_cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        if not contours:
-            logger.warning("  YOLO: No contours found in mask")
-            raise ValueError("No contours found")
-
-        # Get largest contour
-        largest = max(contours, key=cv2.contourArea)
-        area = cv2.contourArea(largest)
-
-        # Check minimum area
-        min_area = (image.shape[0] * image.shape[1]) * 0.01
-        if area < min_area:
-            logger.warning(f"  YOLO: Contour too small: {area:.0f}px² (min: {min_area:.0f}px²)")
-            raise ValueError("Contour too small")
-
-        # Get minimum area bounding rectangle
-        rect = cv2.minAreaRect(largest)
-        box = cv2.boxPoints(rect)
-        box = np.int32(box)
-
-        center, (width, height), angle = rect
-
-        # Ensure width >= height
-        longer_side_px = max(width, height)
-        shorter_side_px = min(width, height)
-
-        logger.info(f"  YOLO SUCCESS: {longer_side_px:.1f}px × {shorter_side_px:.1f}px")
-
-        # Visualize detection
-        result_vis = image.copy()
-        cv2.drawContours(result_vis, [largest], -1, (0, 255, 0), 3)
-        cv2.drawContours(result_vis, [box], 0, (255, 0, 0), 2)
-        cv2.circle(result_vis, (int(center[0]), int(center[1])), 8, (0, 0, 255), -1)
-
-        # Add text overlay
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        cv2.rectangle(result_vis, (10, 10), (550, 150), (0, 0, 0), -1)
-        cv2.rectangle(result_vis, (10, 10), (550, 150), (0, 255, 0), 3)
-        cv2.putText(result_vis, f"YOLO DETECTION: {class_name.upper()}", (20, 40), font, 0.7, (0, 255, 0), 2)
-        cv2.putText(result_vis, f"Size: {longer_side_px:.0f} x {shorter_side_px:.0f} px",
-                   (20, 75), font, 0.6, (255, 255, 255), 2)
-        cv2.putText(result_vis, f"Area: {area:.0f} px² | Conf: {confidence:.2f}",
-                   (20, 110), font, 0.5, (200, 200, 200), 1)
-        cv2.putText(result_vis, f"Class: {detected_class} ({class_name})",
-                   (20, 140), font, 0.5, (200, 200, 200), 1)
-
-        cv2.imwrite(os.path.join(debug_folder, "4_YOLO_DETECTION.jpg"), result_vis)
-
-        return {
-            'longer_side_px': float(longer_side_px),
-            'shorter_side_px': float(shorter_side_px),
-            'contour': largest,
-            'rect': rect,
-            'area': float(area),
-            'angle': float(angle),
-            'method': 'yolo',
-            'object_class': class_name,
-            'object_class_id': detected_class,
-            'confidence': confidence,
-            'debug_folder': debug_folder
-        }
-
-    except Exception as e:
-        logger.warning(f"  YOLO detection failed: {str(e)}")
-        raise ValueError(f"YOLO failed: {str(e)}")
-
-
-def detect_with_rembg(image, debug_folder):
-    """
-    Detect package using rembg AI background removal
-
-    This method uses a pre-trained U2-Net model to automatically
-    remove the background and isolate the foreground object.
-
-    Args:
-        image: BGR input image (numpy array)
-        debug_folder: Path to save debug images
-
-    Returns:
-        dict with pixel dimensions and debug info
-
-    Raises:
-        ValueError: If no package detected or rembg not available
-    """
-    if not REMBG_AVAILABLE:
-        raise ValueError("rembg not available")
-
-    logger.info("  Method: rembg AI background removal")
-
-    try:
-        # Convert OpenCV BGR to PIL RGB
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        image_pil = Image.fromarray(image_rgb)
-
-        # Apply rembg to get mask only
-        logger.info("  Running rembg background removal...")
-        mask_pil = remove(image_pil, only_mask=True)
-
-        # Convert PIL mask to numpy
-        mask = np.array(mask_pil)
-
-        # Save mask
-        cv2.imwrite(os.path.join(debug_folder, "2_rembg_mask.jpg"), mask)
-        logger.info("  rembg mask generated")
-
-        # Clean up mask with morphological operations
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        mask_cleaned = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-        mask_cleaned = cv2.morphologyEx(mask_cleaned, cv2.MORPH_OPEN, kernel)
-        cv2.imwrite(os.path.join(debug_folder, "3_rembg_mask_cleaned.jpg"), mask_cleaned)
-
-        # Find contours
-        contours, _ = cv2.findContours(mask_cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        if not contours:
-            logger.warning("  rembg: No contours found in mask")
-            raise ValueError("No contours found")
-
-        # Get largest contour
-        largest = max(contours, key=cv2.contourArea)
-        area = cv2.contourArea(largest)
-
-        # Check minimum area
-        min_area = (image.shape[0] * image.shape[1]) * 0.01  # At least 1% of image
-        if area < min_area:
-            logger.warning(f"  rembg: Contour too small: {area:.0f}px² (min: {min_area:.0f}px²)")
-            raise ValueError("Contour too small")
-
-        # Get minimum area bounding rectangle
-        rect = cv2.minAreaRect(largest)
-        box = cv2.boxPoints(rect)
-        box = np.int32(box)
-
-        center, (width, height), angle = rect
-
-        # Ensure width >= height
-        longer_side_px = max(width, height)
-        shorter_side_px = min(width, height)
-
-        logger.info(f"  rembg SUCCESS: {longer_side_px:.1f}px × {shorter_side_px:.1f}px")
-
-        # Visualize detection
-        result_vis = image.copy()
-        cv2.drawContours(result_vis, [largest], -1, (0, 255, 0), 3)
-        cv2.drawContours(result_vis, [box], 0, (255, 0, 0), 2)
-        cv2.circle(result_vis, (int(center[0]), int(center[1])), 8, (0, 0, 255), -1)
-
-        # Add text overlay
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        cv2.rectangle(result_vis, (10, 10), (500, 130), (0, 0, 0), -1)
-        cv2.rectangle(result_vis, (10, 10), (500, 130), (0, 255, 0), 3)
-        cv2.putText(result_vis, "REMBG DETECTION SUCCESS", (20, 40), font, 0.7, (0, 255, 0), 2)
-        cv2.putText(result_vis, f"Size: {longer_side_px:.0f} x {shorter_side_px:.0f} px",
-                   (20, 75), font, 0.6, (255, 255, 255), 2)
-        cv2.putText(result_vis, f"Area: {area:.0f} px²",
-                   (20, 105), font, 0.5, (200, 200, 200), 1)
-
-        cv2.imwrite(os.path.join(debug_folder, "4_REMBG_DETECTION.jpg"), result_vis)
-
-        return {
-            'longer_side_px': float(longer_side_px),
-            'shorter_side_px': float(shorter_side_px),
-            'contour': largest,
-            'rect': rect,
-            'area': float(area),
-            'angle': float(angle),
-            'method': 'rembg',
-            'debug_folder': debug_folder
-        }
-
-    except Exception as e:
-        logger.warning(f"  rembg detection failed: {str(e)}")
-        raise ValueError(f"rembg failed: {str(e)}")
-
-
-def detect_with_edge_detection(image, debug_folder):
-    """
-    Detect package using traditional edge detection (fallback method)
-
-    This method uses CLAHE enhancement, Gaussian blur, and Canny edge detection.
-
-    Args:
-        image: BGR input image (numpy array)
-        debug_folder: Path to save debug images
-
-    Returns:
-        dict with pixel dimensions and debug info
-
-    Raises:
-        ValueError: If no package detected
-    """
-    logger.info("  Method: Edge detection (Canny)")
-
-    # Convert to grayscale
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    cv2.imwrite(os.path.join(debug_folder, "5_grayscale.jpg"), gray)
-
-    # Enhance with CLAHE
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    enhanced = clahe.apply(gray)
-    cv2.imwrite(os.path.join(debug_folder, "6_clahe_enhanced.jpg"), enhanced)
-    logger.info("  CLAHE enhancement applied")
-
-    # Gaussian blur
-    blurred = cv2.GaussianBlur(enhanced, (5, 5), 0)
-    cv2.imwrite(os.path.join(debug_folder, "7_gaussian_blur.jpg"), blurred)
-
-    # Edge detection
-    edges = cv2.Canny(blurred, 50, 150)
-    cv2.imwrite(os.path.join(debug_folder, "8_canny_edges.jpg"), edges)
-    logger.info("  Canny edge detection applied")
-
-    # Find contours
-    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    if not contours:
-        logger.error("  Edge detection: No contours found!")
-        raise ValueError("PACKAGE_NOT_DETECTED")
-
-    # Sort by area
-    contours = sorted(contours, key=cv2.contourArea, reverse=True)
-    logger.info(f"  Edge detection: Found {len(contours)} contours")
-
-    # Visualize all contours
-    all_contours_vis = image.copy()
-    cv2.drawContours(all_contours_vis, contours[:10], -1, (0, 255, 0), 2)
-    cv2.imwrite(os.path.join(debug_folder, "9_all_contours.jpg"), all_contours_vis)
-
-    # Get largest contour (the package)
-    largest = max(contours, key=cv2.contourArea)
-    area = cv2.contourArea(largest)
-
-    # Filter out tiny contours (noise)
-    min_area = (image.shape[0] * image.shape[1]) * 0.01  # At least 1% of image
-    if area < min_area:
-        logger.error(f"  Edge detection: Largest contour too small: {area:.0f}px² (min: {min_area:.0f}px²)")
-        raise ValueError("PACKAGE_NOT_DETECTED")
-
-    logger.info(f"  Edge detection: Largest contour area: {area:.0f}px²")
-
-    # Get minimum area bounding rectangle
-    rect = cv2.minAreaRect(largest)
-    box = cv2.boxPoints(rect)
-    box = np.int32(box)
-
-    center, (width, height), angle = rect
-
-    # Ensure width >= height
-    longer_side_px = max(width, height)
-    shorter_side_px = min(width, height)
-
-    logger.info(f"  Edge detection: Bounding rectangle - {longer_side_px:.1f}px × {shorter_side_px:.1f}px")
-    logger.info(f"           Center: ({center[0]:.1f}, {center[1]:.1f}), Angle: {angle:.1f}°")
-
-    # Visualize detection
-    result_vis = image.copy()
-    cv2.drawContours(result_vis, [largest], -1, (0, 255, 0), 3)
-    cv2.drawContours(result_vis, [box], 0, (255, 0, 0), 2)
-    cv2.circle(result_vis, (int(center[0]), int(center[1])), 8, (0, 0, 255), -1)
-
-    # Add text overlay
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    cv2.rectangle(result_vis, (10, 10), (500, 130), (0, 0, 0), -1)
-    cv2.rectangle(result_vis, (10, 10), (500, 130), (0, 255, 0), 3)
-    cv2.putText(result_vis, "EDGE DETECTION SUCCESS", (20, 40), font, 0.7, (0, 255, 0), 2)
-    cv2.putText(result_vis, f"Size: {longer_side_px:.0f} x {shorter_side_px:.0f} px",
-               (20, 75), font, 0.6, (255, 255, 255), 2)
-    cv2.putText(result_vis, f"Area: {area:.0f} px²",
-               (20, 105), font, 0.5, (200, 200, 200), 1)
-
-    cv2.imwrite(os.path.join(debug_folder, "10_EDGE_DETECTION.jpg"), result_vis)
-
-    return {
-        'longer_side_px': float(longer_side_px),
-        'shorter_side_px': float(shorter_side_px),
-        'contour': largest,
-        'rect': rect,
-        'area': float(area),
-        'angle': float(angle),
-        'method': 'edge_detection',
-        'debug_folder': debug_folder
-    }
 
 
 def detect_largest_rectangle(image, image_name="image"):
@@ -412,22 +32,28 @@ def detect_largest_rectangle(image, image_name="image"):
     Works for ANY shape (rectangular, triangular, circular, irregular).
     Returns minimum area bounding rectangle - matches shipping carrier requirements.
 
-    Detection Strategy (tries in order):
-    1. YOLO object detection - Fastest (50-200ms), works for 80 COCO classes
-    2. rembg AI background removal - Most accurate (90-95%), works on ANY object
-    3. Edge detection - Last resort fallback (60-75%)
+    Uses detection strategy runner to try configured methods in order
+    until one succeeds. Methods are configured in config/detection_config.py.
 
     Args:
         image: BGR input image (numpy array)
         image_name: Name for debug images (e.g., "top_view", "side_view")
 
     Returns:
-        dict with pixel dimensions and debug info
-            - 'method': 'yolo', 'rembg', or 'edge_detection'
-            - 'object_class': (optional) object class name if detected by YOLO
+        dict with pixel dimensions and debug info:
+            - 'longer_side_px': Longer side in pixels
+            - 'shorter_side_px': Shorter side in pixels
+            - 'contour': Detected contour
+            - 'rect': Minimum area bounding rectangle
+            - 'area': Contour area
+            - 'angle': Rotation angle
+            - 'method': Detection method used
+            - 'confidence': Detection confidence
+            - 'debug_folder': Path to debug images
+            - (optional) 'object_class': Object class if detected by YOLO
 
     Raises:
-        ValueError: If no package detected by any method
+        ValueError: If no package detected by any method (PACKAGE_NOT_DETECTED)
     """
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]
     debug_folder = os.path.join(DEBUG_IMAGE_DIR, f"package_{image_name}_{timestamp}")
@@ -441,59 +67,48 @@ def detect_largest_rectangle(image, image_name="image"):
     cv2.imwrite(os.path.join(debug_folder, "1_original.jpg"), image)
     logger.info(f"Original image shape: {image.shape}")
 
-    detection_result = None
-    methods_tried = []
+    try:
+        # Get configured detectors
+        detectors = DetectionConfig.get_measurement_detectors()
 
-    # ----------------------------
-    # Method 1: Try YOLO (fastest, but only for known objects)
-    # ----------------------------
-    if YOLO_AVAILABLE:
-        logger.info("Attempting detection with YOLO (fast object detection)...")
-        try:
-            detection_result = detect_with_yolo(image, debug_folder)
-            logger.info("[SUCCESS] YOLO detection successful!")
-        except Exception as e:
-            logger.info(f"[FAILED] YOLO detection failed: {str(e)}")
-            methods_tried.append(f"yolo: {str(e)}")
-    else:
-        logger.info("YOLO not available, skipping")
-        methods_tried.append("yolo: not installed")
+        if not detectors:
+            logger.error("No measurement detectors configured!")
+            raise ValueError("PACKAGE_NOT_DETECTED")
 
-    # ----------------------------
-    # Method 2: Try rembg (most accurate, works on any object)
-    # ----------------------------
-    if detection_result is None and REMBG_AVAILABLE:
-        logger.info("Attempting detection with rembg (AI background removal)...")
-        try:
-            detection_result = detect_with_rembg(image, debug_folder)
-            logger.info("[SUCCESS] rembg detection successful!")
-        except Exception as e:
-            logger.warning(f"[FAILED] rembg detection failed: {str(e)}")
-            methods_tried.append(f"rembg: {str(e)}")
-    elif detection_result is None and not REMBG_AVAILABLE:
-        logger.info("rembg not available, skipping AI detection")
-        methods_tried.append("rembg: not installed")
+        logger.info(f"Loaded {len(detectors)} measurement detector(s) from configuration")
 
-    # ----------------------------
-    # Method 3: Fallback to edge detection
-    # ----------------------------
-    if detection_result is None:
-        logger.info("Attempting detection with edge detection (last resort)...")
-        try:
-            detection_result = detect_with_edge_detection(image, debug_folder)
-            logger.info("[SUCCESS] Edge detection successful!")
-        except Exception as e:
-            logger.error(f"[FAILED] Edge detection failed: {str(e)}")
-            methods_tried.append(f"edge_detection: {str(e)}")
+        # Create strategy runner
+        runner = DetectionStrategyRunner(detectors)
 
-    # ----------------------------
-    # Final result
-    # ----------------------------
-    if detection_result is None:
+        # Run detection
+        result = runner.run(image, debug_folder)
+
+        logger.info("=" * 70)
+        logger.info(f"SUCCESS: Package detected using {result.method_name}")
+        logger.info(f"Dimensions: {result.metadata.get('longer_side_px', 0):.1f}px × {result.metadata.get('shorter_side_px', 0):.1f}px")
+        logger.info(f"Confidence: {result.confidence:.3f}")
+        logger.info("=" * 70)
+
+        # Convert to expected format
+        return {
+            'longer_side_px': result.metadata.get('longer_side_px'),
+            'shorter_side_px': result.metadata.get('shorter_side_px'),
+            'contour': result.contour,
+            'rect': result.rect,
+            'area': result.metadata.get('area'),
+            'angle': result.metadata.get('angle'),
+            'method': result.method_name,
+            'confidence': result.confidence,
+            'debug_folder': debug_folder,
+            # Include optional metadata
+            **{k: v for k, v in result.metadata.items()
+               if k not in ['longer_side_px', 'shorter_side_px', 'area', 'angle']}
+        }
+
+    except ValueError as e:
         # All methods failed
         logger.error("=" * 70)
         logger.error(f"FAILED: Package not detected in {image_name}")
-        logger.error(f"Methods tried: {', '.join(methods_tried)}")
         logger.error("=" * 70)
 
         # Save failure visualization
@@ -507,14 +122,9 @@ def detect_largest_rectangle(image, image_name="image"):
 
         raise ValueError("PACKAGE_NOT_DETECTED")
 
-    # Success!
-    logger.info("=" * 70)
-    logger.info(f"SUCCESS: Package detected in {image_name}")
-    logger.info(f"Detection method used: {detection_result['method']}")
-    logger.info(f"Dimensions: {detection_result['longer_side_px']:.1f}px × {detection_result['shorter_side_px']:.1f}px")
-    logger.info("=" * 70)
-
-    return detection_result
+    except Exception as e:
+        logger.error(f"Unexpected error during detection: {str(e)}", exc_info=True)
+        raise ValueError("PACKAGE_NOT_DETECTED")
 
 
 def analyze_package(top_view, side_view, pixels_per_mm, target_units='inches'):
@@ -535,7 +145,13 @@ def analyze_package(top_view, side_view, pixels_per_mm, target_units='inches'):
         target_units: Output units (inches, centimeters, millimeters)
 
     Returns:
-        dict with dimensions, confidence, measurement_method, debug_data
+        dict with dimensions, confidence, measurement_method, debug_data:
+            - 'dimensions': Final dimensions in target units
+            - 'confidence': Overall confidence score
+            - 'measurementMethod': 'two_view_cross_validation'
+            - 'detectionMethods': Methods used for each view
+            - 'rawMeasurements': Detailed measurement data
+            - 'debugImages': Paths to debug images
     """
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     logger.info("=" * 70)
@@ -544,18 +160,14 @@ def analyze_package(top_view, side_view, pixels_per_mm, target_units='inches'):
     logger.info("=" * 70)
 
     try:
-        # ----------------------------
         # Step 1: Detect package in both views
-        # ----------------------------
         logger.info(f"[{timestamp}] Detecting package in TOP VIEW...")
         top_rect = detect_largest_rectangle(top_view, "top_view")
 
         logger.info(f"[{timestamp}] Detecting package in SIDE VIEW...")
         side_rect = detect_largest_rectangle(side_view, "side_view")
 
-        # ----------------------------
         # Step 2: Extract pixel dimensions
-        # ----------------------------
         top_long_px = top_rect['longer_side_px']
         top_short_px = top_rect['shorter_side_px']
         side_long_px = side_rect['longer_side_px']
@@ -564,9 +176,7 @@ def analyze_package(top_view, side_view, pixels_per_mm, target_units='inches'):
         logger.info(f"[{timestamp}] Top view:  {top_long_px:.1f}px × {top_short_px:.1f}px")
         logger.info(f"[{timestamp}] Side view: {side_long_px:.1f}px × {side_short_px:.1f}px")
 
-        # ----------------------------
         # Step 3: Convert to millimeters
-        # ----------------------------
         length_from_top_mm = top_long_px / pixels_per_mm
         width_from_top_mm = top_short_px / pixels_per_mm
         length_from_side_mm = side_long_px / pixels_per_mm
@@ -575,9 +185,7 @@ def analyze_package(top_view, side_view, pixels_per_mm, target_units='inches'):
         logger.info(f"[{timestamp}] Top view (mm):  Length={length_from_top_mm:.1f}, Width={width_from_top_mm:.1f}")
         logger.info(f"[{timestamp}] Side view (mm): Length={length_from_side_mm:.1f}, Height={height_from_side_mm:.1f}")
 
-        # ----------------------------
         # Step 4: Cross-validate length (should match between views)
-        # ----------------------------
         if length_from_top_mm > 0:
             length_discrepancy = abs(length_from_top_mm - length_from_side_mm) / length_from_top_mm
         else:
@@ -585,9 +193,7 @@ def analyze_package(top_view, side_view, pixels_per_mm, target_units='inches'):
 
         logger.info(f"[{timestamp}] Length discrepancy: {length_discrepancy*100:.1f}%")
 
-        # ----------------------------
         # Step 5: Calculate confidence and final dimensions
-        # ----------------------------
         if length_discrepancy < 0.05:  # Within 5%
             confidence = 0.95
             final_length_mm = (length_from_top_mm + length_from_side_mm) / 2
@@ -604,9 +210,7 @@ def analyze_package(top_view, side_view, pixels_per_mm, target_units='inches'):
         logger.info(f"[{timestamp}] Confidence: {confidence:.2f} ({confidence_level})")
         logger.info(f"[{timestamp}] Final length (averaged): {final_length_mm:.1f}mm")
 
-        # ----------------------------
         # Step 6: Convert to target units
-        # ----------------------------
         dimensions = convert_units({
             'length': final_length_mm,
             'width': width_from_top_mm,
@@ -618,9 +222,7 @@ def analyze_package(top_view, side_view, pixels_per_mm, target_units='inches'):
         logger.info(f"[{timestamp}]   Width:  {dimensions['width']:.2f}")
         logger.info(f"[{timestamp}]   Height: {dimensions['height']:.2f}")
 
-        # ----------------------------
         # Step 7: Create comparison debug image
-        # ----------------------------
         comparison_path = save_comparison_debug_image(
             top_view, side_view,
             top_rect, side_rect,

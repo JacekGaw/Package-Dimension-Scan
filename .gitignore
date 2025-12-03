@@ -25,6 +25,8 @@ ENV/
 *.cover
 .coverage
 
+yolov8n-seg.pt
+
 # OS
 .DS_Store
 Thumbs.db

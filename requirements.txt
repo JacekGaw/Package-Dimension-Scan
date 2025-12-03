@@ -4,3 +4,8 @@ opencv-python-headless>=4.8.0
 numpy>=1.24.0
 Pillow>=10.0.0
 python-dotenv>=1.0.0
+
+# Object detection methods (in order of speed: YOLO > rembg > edge detection)
+ultralytics>=8.0.0          # YOLO object detection - fastest (50-200ms)
+rembg>=2.0.0                # AI background removal - most accurate (0.5-2s)
+onnxruntime>=1.23.0         # Required by rembg

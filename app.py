@@ -266,6 +266,11 @@ def analyze():
 
         return jsonify({
             'success': False,
+            'dimensions': None,
+            'confidence': None,
+            'detectionMethods': None,
+            'rawMeasurements': None,
+            'category': None,
             'error': {
                 'code': error_code,
                 'message': 'Package not detected in images',
@@ -281,6 +286,11 @@ def analyze():
 
         return jsonify({
             'success': False,
+            'dimensions': None,
+            'confidence': None,
+            'detectionMethods': None,
+            'rawMeasurements': None,
+            'category': None,
             'error': {
                 'code': 'INTERNAL_ERROR',
                 'message': str(e)

@@ -42,7 +42,7 @@ class DetectionConfig:
         },
         {
             'type': 'adaptive_calibration',
-            'enabled': True,
+            'enabled': False,
             'config': {
                 'aspect_ratio_min': 1.50,
                 'aspect_ratio_max': 1.65,
@@ -57,7 +57,7 @@ class DetectionConfig:
         },
         {
             'type': 'otsu_calibration',
-            'enabled': True,
+            'enabled': False,
             'config': {
                 'aspect_ratio_min': 1.50,
                 'aspect_ratio_max': 1.65,
@@ -75,7 +75,7 @@ class DetectionConfig:
                 'aspect_ratio_min': 1.50,
                 'aspect_ratio_max': 1.65,
                 'min_area_ratio': 0.01,
-                'morph_kernel_size': (5, 5)
+                'morph_kernel_size': (2, 2)
             }
         },
     ]
@@ -89,12 +89,21 @@ class DetectionConfig:
         # AI METHODS FIRST - They understand whole objects, not just edges
         {
             'type': 'yolo',
-            'enabled': False,  # ENABLED - Best for whole object detection
+            'enabled': True,  # ENABLED - Best for whole object detection
             'config': {
                 'model': 'yolov8n-seg.pt',  # Nano model - fastest
-                'confidence_threshold': 0.5,
-                'min_area_ratio': 0.10,
-                'morph_kernel_size': (5, 5)
+                'confidence_threshold': 0.5,  # Increase to 0.6-0.7 for stricter detections
+                'min_area_ratio': 0.02,
+
+                # MORPHOLOGICAL OPERATIONS - Control mask cleanup
+                'morph_kernel_size': (1, 1),  # Kernel for OPEN/CLOSE operations. Smaller = less smoothing (try 3x3 or 2x2)
+                'skip_morph_close': False,  # Set True to skip MORPH_CLOSE (expansion) step for tighter masks
+                'skip_morph_open': False,  # Set True to skip MORPH_OPEN (contraction) step
+                'reverse_morph_order': False,  # Set True to contract before expand (stricter masks)
+
+                # EROSION - Shrinks mask inward from edges for tighter fit
+                'erosion_iterations': 3,  # Number of erosion passes (0-3). Higher = tighter mask but may lose detail
+                'erosion_kernel_size': (1, 1),  # Erosion kernel size. Larger = more aggressive shrinking
             }
         },
         {
@@ -102,8 +111,23 @@ class DetectionConfig:
             'enabled': True,  # AI segmentation - works on any object
             'config': {
                 'model_name': 'u2net',
-                'min_area_ratio': 0.05,  # 15% to filter out small features (logos, text)
-                'morph_kernel_size': (5, 5)
+                'min_area_ratio': 0.01,  # 2% to filter out small features (logos, text)
+
+                # ALPHA MATTING - Advanced edge refinement for precise boundaries
+                'alpha_matting': True,  # Enable for more precise edge detection (slower but more accurate)
+                'alpha_matting_foreground_threshold': 200,  # Lower (200-220) = stricter foreground definition
+                'alpha_matting_background_threshold': 20,  # Higher (20-30) = more aggressive background removal
+                'alpha_matting_erode_size': 15,  # Higher (15-20) = more erosion at edges for tighter fit
+
+                # MORPHOLOGICAL OPERATIONS - Control mask cleanup
+                'morph_kernel_size': (1, 1),  # Kernel for OPEN/CLOSE operations. Smaller = less smoothing (try 3x3 or 2x2)
+                'skip_morph_close': False,  # Set True to skip MORPH_CLOSE (expansion) step for tighter masks
+                'skip_morph_open': False,  # Set True to skip MORPH_OPEN (contraction) step
+                'reverse_morph_order': True,  # Set True to contract before expand (stricter masks)
+
+                # EROSION - Shrinks mask inward from edges for tighter fit
+                'erosion_iterations': 3,  # Number of erosion passes (0-3). Higher = tighter mask but may lose detail
+                'erosion_kernel_size': (1, 1),  # Erosion kernel size. Larger = more aggressive shrinking
             }
         },
         # TRADITIONAL CV METHODS - DISABLED (they detect logos/text instead of packages)

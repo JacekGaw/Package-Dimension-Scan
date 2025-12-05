@@ -30,7 +30,17 @@ class YOLODetector(BaseDetector):
         self.model_name = config.get('model', 'yolov8n-seg.pt')
         self.confidence_threshold = config.get('confidence_threshold', 0.5)
         self.min_area_ratio = config.get('min_area_ratio', 0.01)
+
+        # Morphological operations config
         self.morph_kernel_size = config.get('morph_kernel_size', (5, 5))
+        self.skip_morph_close = config.get('skip_morph_close', False)
+        self.skip_morph_open = config.get('skip_morph_open', False)
+        self.reverse_morph_order = config.get('reverse_morph_order', False)
+
+        # Erosion config
+        self.erosion_iterations = config.get('erosion_iterations', 0)
+        self.erosion_kernel_size = config.get('erosion_kernel_size', (3, 3))
+
         self.model = None  # Loaded on first use (lazy loading)
 
     def is_available(self) -> bool:
@@ -116,9 +126,28 @@ class YOLODetector(BaseDetector):
             cv2.imwrite(os.path.join(debug_folder, "2_yolo_mask.jpg"), mask_uint8)
 
             # Clean up mask with morphological operations
+            mask_cleaned = mask_uint8.copy()
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, self.morph_kernel_size)
-            mask_cleaned = cv2.morphologyEx(mask_uint8, cv2.MORPH_CLOSE, kernel)
-            mask_cleaned = cv2.morphologyEx(mask_cleaned, cv2.MORPH_OPEN, kernel)
+
+            # Apply morphological operations based on configuration
+            if self.reverse_morph_order:
+                # Contract first, then expand (stricter masks)
+                if not self.skip_morph_open:
+                    mask_cleaned = cv2.morphologyEx(mask_cleaned, cv2.MORPH_OPEN, kernel)
+                if not self.skip_morph_close:
+                    mask_cleaned = cv2.morphologyEx(mask_cleaned, cv2.MORPH_CLOSE, kernel)
+            else:
+                # Default: Expand first, then contract (smoother masks)
+                if not self.skip_morph_close:
+                    mask_cleaned = cv2.morphologyEx(mask_cleaned, cv2.MORPH_CLOSE, kernel)
+                if not self.skip_morph_open:
+                    mask_cleaned = cv2.morphologyEx(mask_cleaned, cv2.MORPH_OPEN, kernel)
+
+            # Apply erosion if configured (shrinks mask for tighter fit)
+            if self.erosion_iterations > 0:
+                erosion_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, self.erosion_kernel_size)
+                mask_cleaned = cv2.erode(mask_cleaned, erosion_kernel, iterations=self.erosion_iterations)
+
             cv2.imwrite(os.path.join(debug_folder, "3_yolo_mask_cleaned.jpg"), mask_cleaned)
 
             # Find contours

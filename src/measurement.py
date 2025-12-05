@@ -14,6 +14,7 @@ import cv2
 import numpy as np
 import os
 import logging
+import base64
 from datetime import datetime
 
 from src.strategies.strategy_runner import DetectionStrategyRunner
@@ -223,7 +224,7 @@ def analyze_package(top_view, side_view, pixels_per_mm, target_units='inches'):
         logger.info(f"[{timestamp}]   Height: {dimensions['height']:.2f}")
 
         # Step 7: Create comparison debug image
-        comparison_path = save_comparison_debug_image(
+        comparison_path, comparison_base64 = save_comparison_debug_image(
             top_view, side_view,
             top_rect, side_rect,
             dimensions, confidence,
@@ -234,10 +235,14 @@ def analyze_package(top_view, side_view, pixels_per_mm, target_units='inches'):
         logger.info(f"[{timestamp}] SUCCESS: Package measurement complete")
         logger.info("=" * 70)
 
+        # Extract category from YOLO detection (if available)
+        category = top_rect.get('object_class') or side_rect.get('object_class')
+        if category:
+            logger.info(f"[{timestamp}] Detected category: {category}")
+
         return {
             'dimensions': dimensions,
             'confidence': float(confidence),
-            'measurementMethod': 'two_view_cross_validation',
             'detectionMethods': {
                 'topView': top_rect.get('method', 'unknown'),
                 'sideView': side_rect.get('method', 'unknown')
@@ -258,11 +263,9 @@ def analyze_package(top_view, side_view, pixels_per_mm, target_units='inches'):
                 'lengthDiscrepancy': float(length_discrepancy),
                 'pixelsPerMillimeter': float(pixels_per_mm)
             },
-            'debugImages': {
-                'topView': top_rect.get('debug_folder'),
-                'sideView': side_rect.get('debug_folder'),
-                'comparison': comparison_path
-            }
+            'category': category,
+            'comparisonImage': comparison_base64,
+            'error': None
         }
 
     except Exception as e:
@@ -316,7 +319,7 @@ def save_comparison_debug_image(top_view, side_view, top_rect, side_rect, dimens
         timestamp: Timestamp for filename
 
     Returns:
-        Path to saved comparison image
+        Tuple of (path to saved image, base64 encoded image string)
     """
     try:
         # Resize images to same height for side-by-side display
@@ -380,14 +383,19 @@ def save_comparison_debug_image(top_view, side_view, top_rect, side_rect, dimens
         # Combine overlay with comparison
         final_image = np.vstack([overlay, comparison])
 
-        # Save
+        # Save to file
         filename = f"measurement_comparison_{timestamp}.jpg"
         output_path = os.path.join(DEBUG_IMAGE_DIR, filename)
         cv2.imwrite(output_path, final_image)
 
+        # Encode to base64
+        _, buffer = cv2.imencode('.jpg', final_image)
+        base64_image = base64.b64encode(buffer).decode('utf-8')
+
         logger.info(f"Comparison debug image saved: {output_path}")
-        return output_path
+        logger.info(f"Comparison image encoded to base64 ({len(base64_image)} chars)")
+        return output_path, base64_image
 
     except Exception as e:
         logger.error(f"Failed to save comparison image: {str(e)}")
-        return None
+        return None, None

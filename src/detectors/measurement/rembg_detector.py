@@ -30,7 +30,22 @@ class RembgDetector(BaseDetector):
 
         self.model_name = config.get('model_name', 'u2net')
         self.min_area_ratio = config.get('min_area_ratio', 0.01)
+
+        # Alpha matting config - for precise edge refinement
+        self.alpha_matting = config.get('alpha_matting', False)
+        self.alpha_matting_foreground_threshold = config.get('alpha_matting_foreground_threshold', 240)
+        self.alpha_matting_background_threshold = config.get('alpha_matting_background_threshold', 10)
+        self.alpha_matting_erode_size = config.get('alpha_matting_erode_size', 10)
+
+        # Morphological operations config
         self.morph_kernel_size = config.get('morph_kernel_size', (5, 5))
+        self.skip_morph_close = config.get('skip_morph_close', False)
+        self.skip_morph_open = config.get('skip_morph_open', False)
+        self.reverse_morph_order = config.get('reverse_morph_order', False)
+
+        # Erosion config
+        self.erosion_iterations = config.get('erosion_iterations', 0)
+        self.erosion_kernel_size = config.get('erosion_kernel_size', (3, 3))
 
     def is_available(self) -> bool:
         """Check if rembg library is installed"""
@@ -62,7 +77,20 @@ class RembgDetector(BaseDetector):
 
             # Apply rembg to get mask only
             logger.info("  Running rembg background removal...")
-            mask_pil = remove(image_pil, only_mask=True)
+            if self.alpha_matting:
+                logger.info(f"    Alpha matting enabled: fg_thresh={self.alpha_matting_foreground_threshold}, "
+                           f"bg_thresh={self.alpha_matting_background_threshold}, "
+                           f"erode={self.alpha_matting_erode_size}")
+                mask_pil = remove(
+                    image_pil,
+                    only_mask=True,
+                    alpha_matting=True,
+                    alpha_matting_foreground_threshold=self.alpha_matting_foreground_threshold,
+                    alpha_matting_background_threshold=self.alpha_matting_background_threshold,
+                    alpha_matting_erode_size=self.alpha_matting_erode_size
+                )
+            else:
+                mask_pil = remove(image_pil, only_mask=True)
 
             # Convert PIL mask to numpy
             mask = np.array(mask_pil)
@@ -72,9 +100,28 @@ class RembgDetector(BaseDetector):
             logger.info("  rembg mask generated")
 
             # Clean up mask with morphological operations
+            mask_cleaned = mask.copy()
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, self.morph_kernel_size)
-            mask_cleaned = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-            mask_cleaned = cv2.morphologyEx(mask_cleaned, cv2.MORPH_OPEN, kernel)
+
+            # Apply morphological operations based on configuration
+            if self.reverse_morph_order:
+                # Contract first, then expand (stricter masks)
+                if not self.skip_morph_open:
+                    mask_cleaned = cv2.morphologyEx(mask_cleaned, cv2.MORPH_OPEN, kernel)
+                if not self.skip_morph_close:
+                    mask_cleaned = cv2.morphologyEx(mask_cleaned, cv2.MORPH_CLOSE, kernel)
+            else:
+                # Default: Expand first, then contract (smoother masks)
+                if not self.skip_morph_close:
+                    mask_cleaned = cv2.morphologyEx(mask_cleaned, cv2.MORPH_CLOSE, kernel)
+                if not self.skip_morph_open:
+                    mask_cleaned = cv2.morphologyEx(mask_cleaned, cv2.MORPH_OPEN, kernel)
+
+            # Apply erosion if configured (shrinks mask for tighter fit)
+            if self.erosion_iterations > 0:
+                erosion_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, self.erosion_kernel_size)
+                mask_cleaned = cv2.erode(mask_cleaned, erosion_kernel, iterations=self.erosion_iterations)
+
             cv2.imwrite(os.path.join(debug_folder, "3_rembg_mask_cleaned.jpg"), mask_cleaned)
 
             # Find contours

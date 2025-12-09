@@ -25,7 +25,7 @@ class DetectionConfig:
     CALIBRATION_METHODS = [
         {
             'type': 'quadrilateral',
-            'enabled': True,
+            'enabled': False,
             'config': {
                 'aspect_ratio_min': 1.50,
                 'aspect_ratio_max': 1.65,
@@ -74,8 +74,8 @@ class DetectionConfig:
                 'model_name': 'u2net',
                 'aspect_ratio_min': 1.50,
                 'aspect_ratio_max': 1.65,
-                'min_area_ratio': 0.01,
-                'morph_kernel_size': (2, 2)
+                'min_area_ratio': 0.005,
+                'morph_kernel_size': (4, 4)  # Match measurement config for consistency
             }
         },
     ]
@@ -111,23 +111,23 @@ class DetectionConfig:
             'enabled': True,  # AI segmentation - works on any object
             'config': {
                 'model_name': 'u2net',
-                'min_area_ratio': 0.01,  # 2% to filter out small features (logos, text)
+                'min_area_ratio': 0.005,  # 1% minimum area
 
-                # ALPHA MATTING - Advanced edge refinement for precise boundaries
-                'alpha_matting': True,  # Enable for more precise edge detection (slower but more accurate)
-                'alpha_matting_foreground_threshold': 200,  # Lower (200-220) = stricter foreground definition
-                'alpha_matting_background_threshold': 20,  # Higher (20-30) = more aggressive background removal
-                'alpha_matting_erode_size': 15,  # Higher (15-20) = more erosion at edges for tighter fit
+                # ALPHA MATTING - DISABLED for consistency
+                'alpha_matting': True,  # Disabled - was causing inconsistent masks
+                'alpha_matting_foreground_threshold': 240,
+                'alpha_matting_background_threshold': 10,
+                'alpha_matting_erode_size': 10,
 
-                # MORPHOLOGICAL OPERATIONS - Control mask cleanup
-                'morph_kernel_size': (1, 1),  # Kernel for OPEN/CLOSE operations. Smaller = less smoothing (try 3x3 or 2x2)
-                'skip_morph_close': False,  # Set True to skip MORPH_CLOSE (expansion) step for tighter masks
-                'skip_morph_open': False,  # Set True to skip MORPH_OPEN (contraction) step
-                'reverse_morph_order': True,  # Set True to contract before expand (stricter masks)
+                # MORPHOLOGICAL OPERATIONS - Keep minimal for consistency
+                'morph_kernel_size': (3, 3),  # Small kernel for basic cleanup
+                'skip_morph_close': False,  # Keep basic CLOSE for hole filling
+                'skip_morph_open': False,  # Keep basic OPEN for noise removal
+                'reverse_morph_order': False,  # Standard order: close then open
 
-                # EROSION - Shrinks mask inward from edges for tighter fit
-                'erosion_iterations': 3,  # Number of erosion passes (0-3). Higher = tighter mask but may lose detail
-                'erosion_kernel_size': (1, 1),  # Erosion kernel size. Larger = more aggressive shrinking
+                # EROSION - DISABLED for now to maintain detection consistency
+                'erosion_iterations': 3,  # No additional erosion
+                'erosion_kernel_size': (1, 1),
             }
         },
         # TRADITIONAL CV METHODS - DISABLED (they detect logos/text instead of packages)

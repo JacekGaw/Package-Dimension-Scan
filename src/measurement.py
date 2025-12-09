@@ -186,15 +186,106 @@ def analyze_package(top_view, side_view, pixels_per_mm, target_units='inches'):
         logger.info(f"[{timestamp}] Top view (mm):  Length={length_from_top_mm:.1f}, Width={width_from_top_mm:.1f}")
         logger.info(f"[{timestamp}] Side view (mm): Length={length_from_side_mm:.1f}, Height={height_from_side_mm:.1f}")
 
-        # Step 4: Cross-validate length (should match between views)
+        # Step 4: Apply dynamic distance compensation using length discrepancy
+        # The length should be the same in both views. Any difference indicates perspective magnification.
+        # The view that's CLOSER to camera appears larger due to perspective.
+        # We detect which view is magnified and correct it automatically.
+
+        if length_from_top_mm > 0 and length_from_side_mm > 0:
+            # Calculate length ratio to detect magnification
+            length_ratio_top_to_side = length_from_top_mm / length_from_side_mm
+
+            # Apply correction if discrepancy is significant (>3%)
+            if abs(length_ratio_top_to_side - 1.0) > 0.03:
+
+                if length_from_top_mm > length_from_side_mm:
+                    # TOP VIEW is magnified (closer to camera)
+                    # This happens with flat packages: top surface is elevated by package height
+                    magnification = length_ratio_top_to_side
+
+                    # Correct top view measurements (divide by magnification)
+                    length_from_top_mm_corrected = length_from_top_mm / magnification
+                    width_from_top_mm_corrected = width_from_top_mm / magnification
+
+                    # Calculate implied height/distance ratio
+                    height_to_distance_ratio = 1.0 - (1.0 / magnification)
+
+                    # Calculate implied camera distance from magnification and height
+                    # magnification = D_camera / (D_camera - height)
+                    # Therefore: D_camera = magnification × height / (magnification - 1)
+                    if magnification > 1.0:
+                        implied_camera_distance_mm = magnification * height_from_side_mm / (magnification - 1.0)
+                        implied_camera_distance_inches = implied_camera_distance_mm / 25.4
+                    else:
+                        implied_camera_distance_mm = 0
+                        implied_camera_distance_inches = 0
+
+                    logger.info(f"[{timestamp}] PERSPECTIVE COMPENSATION (Dynamic - TOP VIEW):")
+                    logger.info(f"[{timestamp}]   Detected: Top view closer to camera (flat package)")
+                    logger.info(f"[{timestamp}]   Length ratio (top/side): {magnification:.4f}")
+                    logger.info(f"[{timestamp}]   Magnification factor: {magnification:.4f} ({(magnification-1)*100:.1f}% larger)")
+                    logger.info(f"[{timestamp}]   Package height: {height_from_side_mm:.1f}mm ({height_from_side_mm/25.4:.1f}\")")
+                    logger.info(f"[{timestamp}]   Implied camera distance: {implied_camera_distance_mm:.0f}mm ({implied_camera_distance_inches:.1f}\")")
+                    logger.info(f"[{timestamp}]   Correcting TOP VIEW:")
+                    logger.info(f"[{timestamp}]     Length: {length_from_top_mm:.1f}mm → {length_from_top_mm_corrected:.1f}mm")
+                    logger.info(f"[{timestamp}]     Width:  {width_from_top_mm:.1f}mm → {width_from_top_mm_corrected:.1f}mm")
+                    logger.info(f"[{timestamp}]   NOT correcting: Height (from side view at table level)")
+
+                    # Update with corrected values
+                    length_from_top_mm = length_from_top_mm_corrected
+                    width_from_top_mm = width_from_top_mm_corrected
+
+                else:  # length_from_side_mm > length_from_top_mm
+                    # SIDE VIEW is magnified (closer to camera)
+                    # This happens with tall packages: when standing up, top is elevated
+                    magnification = length_from_side_mm / length_from_top_mm
+
+                    # Correct side view measurements (divide by magnification)
+                    length_from_side_mm_corrected = length_from_side_mm / magnification
+                    height_from_side_mm_corrected = height_from_side_mm / magnification
+
+                    # Calculate implied height/distance ratio
+                    height_to_distance_ratio = 1.0 - (1.0 / magnification)
+
+                    # Calculate implied camera distance from magnification and height (before correction)
+                    # magnification = D_camera / (D_camera - height)
+                    # Therefore: D_camera = magnification × height / (magnification - 1)
+                    height_before_correction = height_from_side_mm
+                    if magnification > 1.0:
+                        implied_camera_distance_mm = magnification * height_before_correction / (magnification - 1.0)
+                        implied_camera_distance_inches = implied_camera_distance_mm / 25.4
+                    else:
+                        implied_camera_distance_mm = 0
+                        implied_camera_distance_inches = 0
+
+                    logger.info(f"[{timestamp}] PERSPECTIVE COMPENSATION (Dynamic - SIDE VIEW):")
+                    logger.info(f"[{timestamp}]   Detected: Side view closer to camera (tall package)")
+                    logger.info(f"[{timestamp}]   Length ratio (side/top): {magnification:.4f}")
+                    logger.info(f"[{timestamp}]   Magnification factor: {magnification:.4f} ({(magnification-1)*100:.1f}% larger)")
+                    logger.info(f"[{timestamp}]   Package height (uncorrected): {height_before_correction:.1f}mm ({height_before_correction/25.4:.1f}\")")
+                    logger.info(f"[{timestamp}]   Implied camera distance: {implied_camera_distance_mm:.0f}mm ({implied_camera_distance_inches:.1f}\")")
+                    logger.info(f"[{timestamp}]   Correcting SIDE VIEW:")
+                    logger.info(f"[{timestamp}]     Length: {length_from_side_mm:.1f}mm → {length_from_side_mm_corrected:.1f}mm")
+                    logger.info(f"[{timestamp}]     Height: {height_from_side_mm:.1f}mm → {height_from_side_mm_corrected:.1f}mm")
+                    logger.info(f"[{timestamp}]   NOT correcting: Width (from top view at table level)")
+
+                    # Update with corrected values
+                    length_from_side_mm = length_from_side_mm_corrected
+                    height_from_side_mm = height_from_side_mm_corrected
+            else:
+                logger.info(f"[{timestamp}] Perspective compensation skipped (lengths within 3%: ratio={length_ratio_top_to_side:.3f})")
+        else:
+            logger.info(f"[{timestamp}] Perspective compensation skipped (invalid length measurements)")
+
+        # Step 5: Cross-validate length (should match between views after correction)
         if length_from_top_mm > 0:
             length_discrepancy = abs(length_from_top_mm - length_from_side_mm) / length_from_top_mm
         else:
             length_discrepancy = 1.0
 
-        logger.info(f"[{timestamp}] Length discrepancy: {length_discrepancy*100:.1f}%")
+        logger.info(f"[{timestamp}] Length discrepancy after compensation: {length_discrepancy*100:.1f}%")
 
-        # Step 5: Calculate confidence and final dimensions
+        # Step 6: Calculate confidence and final dimensions
         if length_discrepancy < 0.05:  # Within 5%
             confidence = 0.95
             final_length_mm = (length_from_top_mm + length_from_side_mm) / 2
@@ -211,7 +302,7 @@ def analyze_package(top_view, side_view, pixels_per_mm, target_units='inches'):
         logger.info(f"[{timestamp}] Confidence: {confidence:.2f} ({confidence_level})")
         logger.info(f"[{timestamp}] Final length (averaged): {final_length_mm:.1f}mm")
 
-        # Step 6: Convert to target units
+        # Step 7: Convert to target units
         dimensions = convert_units({
             'length': final_length_mm,
             'width': width_from_top_mm,
@@ -223,7 +314,7 @@ def analyze_package(top_view, side_view, pixels_per_mm, target_units='inches'):
         logger.info(f"[{timestamp}]   Width:  {dimensions['width']:.2f}")
         logger.info(f"[{timestamp}]   Height: {dimensions['height']:.2f}")
 
-        # Step 7: Create comparison debug image
+        # Step 8: Create comparison debug image
         comparison_path, comparison_base64 = save_comparison_debug_image(
             top_view, side_view,
             top_rect, side_rect,
